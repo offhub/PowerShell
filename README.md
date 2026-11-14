@@ -1,4 +1,4 @@
-# PowerShell ZIP -> unofficial MSI builder (v2)
+# PowerShell ZIP -> unofficial MSI builder (v3: cached MSI assets and WiX)
 
 This adds one **manual GitHub Actions workflow** to a fork of `PowerShell/PowerShell`.
 It wraps the official, SHA-256-verified Windows ZIP release in an unsigned MSI using
@@ -34,6 +34,32 @@ and Actions are enabled for the fork.
 with the hashes published on that version's official GitHub release page. The defaults
 are **only** for `7.7.0`. Hash mismatches abort packaging. The workflow downloads
 ZIP files directly from `https://github.com/PowerShell/PowerShell/releases/`.
+
+## Reusing MSI sources and WiX across GitHub Actions runs
+
+Two independent `actions/cache@v4` entries are restored before building:
+
+| Cache key | Cached content | What happens on a cache hit |
+|---|---|---|
+| `powershell-7.6.0-msi-assets-windows-v1` | `legacy-powershell/assets` from the official PowerShell `v7.6.0` tag | Skip the second `actions/checkout` entirely |
+| `wix-3.14.1-binaries-windows-v1` | `.build-cache/wix3141` (extracted WiX tools) | Skip downloading *and* extracting WiX |
+
+On a miss, the workflow checks out only the upstream `assets` directory (sparse
+checkout), and the build script downloads and extracts WiX to a persistent
+workspace directory. Both are saved by the caching action at the end of the
+successful job and can be restored by subsequent jobs/runs. The cache keys are
+fixed because both upstream versions are pinned; change their `v1` suffix to
+force a refresh.
+
+The official PowerShell 7.7+ ZIP is still downloaded every build and its
+user-supplied SHA-256 verified. MSI output is **not** cached, so installer-mode
+and architecture input changes always generate fresh MSI packages.
+
+GitHub's caches are not permanent and may be evicted; after eviction the next
+build downloads everything again. Repositories can adjust cache retention in
+**Settings → Actions → General → Cache settings**. Inspect cache entries in
+**Actions → Caches**. If you run `all`, concurrent jobs may race to create the
+same cache key on the first build; only one needs to save it.
 
 ## Installation modes
 

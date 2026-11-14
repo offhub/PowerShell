@@ -18,6 +18,10 @@ param(
     [Parameter(Mandatory)]
     [string] $OutputDirectory,
 
+    # Persistent runner workspace path restored/saved via actions/cache.
+    [Parameter(Mandatory)]
+    [string] $WixCacheDirectory,
+
     [ValidateSet('x64', 'x86', 'arm64')]
     [string] $Architecture = 'x64',
 
@@ -101,19 +105,42 @@ $wixRelease = 'wix3141rtm'
 $wixName = 'wix314-binaries.zip'
 $wixUrl = "https://github.com/wixtoolset/wix3/releases/download/$wixRelease/$wixName"
 $wixZip = Join-Path $work $wixName
-$wixDir = Join-Path $work 'wix'
-Write-Host "Downloading WiX 3 binaries: $wixUrl"
-Invoke-WebRequest -Uri $wixUrl -OutFile $wixZip
-Expand-Archive -LiteralPath $wixZip -DestinationPath $wixDir
-$heatFile = Get-ChildItem -LiteralPath $wixDir -Filter 'heat.exe' -File -Recurse | Select-Object -First 1
-if (-not $heatFile) { throw 'WiX heat.exe was not found.' }
-$wixBin = $heatFile.DirectoryName
+$wixDir = [IO.Path]::GetFullPath($WixCacheDirectory)
+
+function Find-WixBin([string] $Directory) {
+    if (-not (Test-Path -LiteralPath $Directory -PathType Container)) {
+        return $null
+    }
+    foreach ($candidate in @(Get-ChildItem -LiteralPath $Directory -Filter 'heat.exe' -File -Recurse)) {
+        $bin = $candidate.DirectoryName
+        if ((Test-Path -LiteralPath (Join-Path $bin 'candle.exe') -PathType Leaf) -and
+            (Test-Path -LiteralPath (Join-Path $bin 'light.exe') -PathType Leaf)) {
+            return $bin
+        }
+    }
+    return $null
+}
+
+$wixBin = Find-WixBin $wixDir
+if ($null -eq $wixBin) {
+    Write-Host "WiX cache missing or incomplete; downloading: $wixUrl"
+    Invoke-WebRequest -Uri $wixUrl -OutFile $wixZip
+    # Do not retain a partial toolchain from a failed prior extraction.
+    if (Test-Path -LiteralPath $wixDir) {
+        Remove-Item -LiteralPath $wixDir -Recurse -Force
+    }
+    Expand-Archive -LiteralPath $wixZip -DestinationPath $wixDir
+    $wixBin = Find-WixBin $wixDir
+    if ($null -eq $wixBin) {
+        throw 'WiX extraction failed: heat.exe, candle.exe, and light.exe are required.'
+    }
+}
+else {
+    Write-Host "Using cached WiX 3.14.1 toolchain: $wixBin"
+}
 $heat = Join-Path $wixBin 'heat.exe'
 $candle = Join-Path $wixBin 'candle.exe'
 $light = Join-Path $wixBin 'light.exe'
-foreach ($item in @($heat, $candle, $light)) {
-    if (-not (Test-Path -LiteralPath $item)) { throw "Missing WiX executable: $item" }
-}
 
 # Patch a *copy* of the 7.6 original; never edit Microsoft's source tree.
 # Keep original WiX UI, shortcut, context menu and PATH authoring.

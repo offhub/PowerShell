@@ -70,13 +70,32 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Check out original 7.6 installer sources
+      # The 7.6.0 installer assets and WiX toolchain are architecture-independent.
+      # A shared key allows x64/x86/ARM64 jobs and later workflow runs to reuse them.
+      - name: Restore PowerShell 7.6.0 installer assets
+        id: legacy-cache
+        uses: actions/cache@v4
+        with:
+          path: legacy-powershell/assets
+          key: powershell-7.6.0-msi-assets-windows-v1
+
+      - name: Check out original 7.6.0 MSI assets (cache miss only)
+        if: steps.legacy-cache.outputs.cache-hit != 'true'
         uses: actions/checkout@v4
         with:
           repository: PowerShell/PowerShell
           ref: v7.6.0
           path: legacy-powershell
+          sparse-checkout: |
+            assets
           persist-credentials: false
+
+      - name: Restore WiX 3.14.1 binaries
+        id: wix-cache
+        uses: actions/cache@v4
+        with:
+          path: .build-cache/wix3141
+          key: wix-3.14.1-binaries-windows-v1
 
       - name: Build MSI from official GitHub Releases ZIP
         shell: pwsh
@@ -95,6 +114,7 @@ jobs:
             -InstallPolicy $env:PS_INSTALL_POLICY `
             -MicrosoftUpdate $env:PS_MICROSOFT_UPDATE `
             -LegacyRoot "$env:GITHUB_WORKSPACE/legacy-powershell" `
+            -WixCacheDirectory "$env:GITHUB_WORKSPACE/.build-cache/wix3141" `
             -OutputDirectory "$env:GITHUB_WORKSPACE/out"
 
       - name: Upload MSI artifact
