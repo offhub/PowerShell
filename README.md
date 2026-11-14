@@ -1,4 +1,4 @@
-# PowerShell ZIP -> unofficial MSI builder (v3: cached MSI assets and WiX)
+# PowerShell ZIP -> unofficial MSI builder (v4: cached release ZIP, MSI assets and WiX)
 
 This adds one **manual GitHub Actions workflow** to a fork of `PowerShell/PowerShell`.
 It wraps the official, SHA-256-verified Windows ZIP release in an unsigned MSI using
@@ -37,29 +37,35 @@ ZIP files directly from `https://github.com/PowerShell/PowerShell/releases/`.
 
 ## Reusing MSI sources and WiX across GitHub Actions runs
 
-Two independent `actions/cache@v4` entries are restored before building:
+Three independent `actions/cache@v4` entries are restored before building:
 
 | Cache key | Cached content | What happens on a cache hit |
 |---|---|---|
 | `powershell-7.6.0-msi-assets-windows-v1` | `legacy-powershell/assets` from the official PowerShell `v7.6.0` tag | Skip the second `actions/checkout` entirely |
 | `wix-3.14.1-binaries-windows-v1` | `.build-cache/wix3141` (extracted WiX tools) | Skip downloading *and* extracting WiX |
+| `powershell-release-zip-v1-<version>-<architecture>-<sha256>` | `.build-cache/releases/PowerShell-<version>-win-<architecture>.zip` (official downloaded ZIP) | Skip downloading the same signed-binary archive |
 
 On a miss, the workflow checks out only the upstream `assets` directory (sparse
 checkout), and the build script downloads and extracts WiX to a persistent
 workspace directory. Both are saved by the caching action at the end of the
 successful job and can be restored by subsequent jobs/runs. The cache keys are
 fixed because both upstream versions are pinned; change their `v1` suffix to
-force a refresh.
+force a refresh. The release-ZIP cache is independently versioned and keyed
+by SHA-256.
 
-The official PowerShell 7.7+ ZIP is still downloaded every build and its
-user-supplied SHA-256 verified. MSI output is **not** cached, so installer-mode
-and architecture input changes always generate fresh MSI packages.
+The official PowerShell ZIP is downloaded only on a cache miss. On every build,
+including cache hits, its user-supplied SHA-256 is verified before extraction.
+If a restored archive does not match, the build stops rather than packaging it.
+The key includes version, architecture and expected hash so changing the hash
+creates a new cache entry. The `block-official`, `upgrade-official`, and MU
+options can reuse the **same release ZIP**. MSI output is **not** cached, so
+installer-option changes always generate fresh MSI packages.
 
 GitHub's caches are not permanent and may be evicted; after eviction the next
 build downloads everything again. Repositories can adjust cache retention in
 **Settings → Actions → General → Cache settings**. Inspect cache entries in
 **Actions → Caches**. If you run `all`, concurrent jobs may race to create the
-same cache key on the first build; only one needs to save it.
+same cache key on the first build; only one needs to save it. Release ZIP cache keys differ by architecture.
 
 ## Installation modes
 

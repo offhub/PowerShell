@@ -97,6 +97,14 @@ jobs:
           path: .build-cache/wix3141
           key: wix-3.14.1-binaries-windows-v1
 
+      # Cache the official release ZIP per version, architecture, and expected hash.
+      # Different install policies share the same archive; hash changes invalidate it.
+      - name: Restore official PowerShell release ZIP
+        uses: actions/cache@v4
+        with:
+          path: .build-cache/releases/PowerShell-${{ inputs.version }}-win-${{ matrix.arch }}.zip
+          key: powershell-release-zip-v1-${{ inputs.version }}-${{ matrix.arch }}-${{ matrix.arch == 'x64' && inputs.sha256_x64 || matrix.arch == 'x86' && inputs.sha256_x86 || inputs.sha256_arm64 }}
+
       - name: Build MSI from official GitHub Releases ZIP
         shell: pwsh
         env:
@@ -115,6 +123,7 @@ jobs:
             -MicrosoftUpdate $env:PS_MICROSOFT_UPDATE `
             -LegacyRoot "$env:GITHUB_WORKSPACE/legacy-powershell" `
             -WixCacheDirectory "$env:GITHUB_WORKSPACE/.build-cache/wix3141" `
+            -ReleaseZipCacheDirectory "$env:GITHUB_WORKSPACE/.build-cache/releases" `
             -OutputDirectory "$env:GITHUB_WORKSPACE/out"
 
       - name: Upload MSI artifact

@@ -22,6 +22,10 @@ param(
     [Parameter(Mandatory)]
     [string] $WixCacheDirectory,
 
+    # Version/architecture-specific official release ZIP restored via actions/cache.
+    [Parameter(Mandatory)]
+    [string] $ReleaseZipCacheDirectory,
+
     [ValidateSet('x64', 'x86', 'arm64')]
     [string] $Architecture = 'x64',
 
@@ -78,13 +82,29 @@ New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
 $OutputDirectory = (Resolve-Path -LiteralPath $OutputDirectory).Path
 
 $zipName = "PowerShell-$Version-win-$Architecture.zip"
-$zipPath = Join-Path $work $zipName
+$releaseZipCache = [IO.Path]::GetFullPath($ReleaseZipCacheDirectory)
+New-Item -ItemType Directory -Path $releaseZipCache -Force | Out-Null
+$zipPath = Join-Path $releaseZipCache $zipName
 $zipUrl = "https://github.com/PowerShell/PowerShell/releases/download/v$Version/$zipName"
-Write-Host "Downloading $zipUrl"
-Invoke-WebRequest -Uri $zipUrl -OutFile $zipPath
+if (Test-Path -LiteralPath $zipPath -PathType Leaf) {
+    Write-Host "Using cached official ZIP: $zipPath"
+}
+else {
+    # Download into the disposable work directory. Publish to the cache path
+    # only after verifying the official expected SHA-256.
+    $downloadPath = Join-Path $work $zipName
+    Write-Host "Downloading $zipUrl"
+    Invoke-WebRequest -Uri $zipUrl -OutFile $downloadPath
+    $downloadHash = (Get-FileHash -LiteralPath $downloadPath -Algorithm SHA256).Hash
+    if ($downloadHash -ine $ExpectedSha256) {
+        throw "Downloaded ZIP SHA-256 mismatch. Expected $ExpectedSha256, found $downloadHash."
+    }
+    Move-Item -LiteralPath $downloadPath -Destination $zipPath
+}
+# Always reverify—even when actions/cache restored the ZIP successfully.
 $actualHash = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash
 if ($actualHash -ine $ExpectedSha256) {
-    throw "ZIP SHA-256 mismatch. Expected $ExpectedSha256, found $actualHash."
+    throw "Cached ZIP SHA-256 mismatch. Expected $ExpectedSha256, found $actualHash. Clear the cache and retry."
 }
 Write-Host "Official ZIP SHA-256 verified: $actualHash"
 
