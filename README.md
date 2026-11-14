@@ -1,29 +1,116 @@
-# Unofficial PowerShell 7.7 MSI builder
+# PowerShell ZIP -> unofficial MSI builder (v2)
 
-These two files are intended to be added to a fork of `PowerShell/PowerShell`, or to an independent GitHub repository. The workflow checks out the public **v7.6.0** source separately to reuse Microsoft's original WiX `Product.wxs` and assets. It uses the official **PowerShell 7.7.0 win-x64 ZIP** as the installed binary payload. It **does not compile PowerShell** or sign the MSI.
+This adds one **manual GitHub Actions workflow** to a fork of `PowerShell/PowerShell`.
+It wraps the official, SHA-256-verified Windows ZIP release in an unsigned MSI using
+Microsoft's original PowerShell 7.6.0 WiX authoring. It does **not** compile PowerShell
+or use Microsoft's signing infrastructure.
 
-## Install into your fork
+## Installation into the fork
 
-Copy `.github/workflows/build-custom-msi.yml` and `tools/custom-msi/build-msi.ps1` into the same paths in the root of your fork; commit and push them. Go to **Actions → Build unofficial PowerShell MSI → Run workflow**. The defaults are the version 7.7.0 and its official published SHA-256. Download the resulting `.msi` from the workflow artifacts.
+Copy the following paths into the root of your fork's **default branch** (usually `main`):
 
-The script uses WiX 3.14.1 *binaries* to compile the recovered WiX 3 installer definition. WiX 3.14.1 is a later security-maintenance release than 3.11, but the source is still WiX 3 syntax.
+```
+.github/workflows/build-custom-msi.yml
+tools/custom-msi/build-msi.ps1
+```
 
-## What it changes from Microsoft's original MSI
+Open **Actions > Build unofficial PowerShell MSI > Run workflow**.
+If the workflow is missing, confirm that the YAML exists on the default branch
+and Actions are enabled for the fork.
 
-- Uses an independent MSI UpgradeCode, fixed between versions of this custom package.
-- Retains the conventional stable x64 PowerShell installation detection key, with an `UnofficialMSI=1` marker.
-- Stops if another installation already owns the stable PowerShell registry-discovery key (the custom MSI's own upgrades are allowed).
-- Removes the Microsoft Update registration action, MU UI and MU properties, as Microsoft no longer ships MSI servicing for 7.7.
-- Separates remembered installer UI options from Microsoft's own MSI registry settings.
-- Keeps the old installer options for PATH, shortcuts, Explorer integration, optional remoting and event manifest registration (the event manifest action is removed if the ZIP lacks its script).
-- Leaves installed Microsoft-signed binaries untouched. The MSI itself remains unsigned.
+## GitHub Actions inputs
 
-## Security and compatibility limitations
+| Input | Choices / default | Effect |
+|---|---|---|
+| `version` | `7.7.0` | Exact official stable release, used in the ZIP URL |
+| `architecture` | `x64` (default), `x86`, `arm64`, `all` | Each selected architecture builds as a separate job/artifact |
+| `install_policy` | `block-official` (default), `upgrade-official` | Disallow or allow migrating an older official MSI of the **same architecture** |
+| `microsoft_update` | `disabled` (default), `legacy-unchecked`, `legacy-checked` | Remove legacy Microsoft Update UI/action, or restore the two original checkboxes and registration action with selected initial state |
+| `sha256_x64` | Official PowerShell 7.7.0 x64 checksum | ZIP verification for x64 |
+| `sha256_x86` | Official PowerShell 7.7.0 x86 checksum | ZIP verification for x86 |
+| `sha256_arm64` | Official PowerShell 7.7.0 ARM64 checksum | ZIP verification for ARM64 |
 
-This is a **source-reviewed starting implementation**, not a tested MSI build. Before distributing, run the workflow and validate its MSI on a disposable clean Windows VM: installation, ARP registration, launch, PATH, context menu and shortcuts, repair, upgrade, uninstall, and event log registration if selected. A ZIP-installed copy not tracked by the standard PowerShell registry key cannot be detected reliably by this package, so ensure `C:\Program Files\PowerShell\7` is not already owned by a different installation. Do not install over an existing Microsoft MSI.
+**Important:** For a version other than `7.7.0`, replace the relevant SHA-256 input(s)
+with the hashes published on that version's official GitHub release page. The defaults
+are **only** for `7.7.0`. Hash mismatches abort packaging. The workflow downloads
+ZIP files directly from `https://github.com/PowerShell/PowerShell/releases/`.
 
-The original `.wxs` has legacy custom actions and an installer UI; use WiX 3.14.1 because 3.11 is archived and contains older vulnerabilities. This does not give you access to Microsoft Update/WSUS servicing. Existing `.exe`/`.dll` Authenticode signatures remain, but the MSI is unsigned and must be treated as an independently authored package.
+## Installation modes
 
-The ZIP hash defaults to the SHA-256 published with the [PowerShell 7.7.0 release](https://github.com/PowerShell/PowerShell/releases/tag/v7.7.0). For subsequent releases update both `version` and `sha256` in the workflow form.
+### Default: `block-official`
 
-Upstream installer implementation: [PowerShell v7.6.0 Product.wxs](https://github.com/PowerShell/PowerShell/blob/v7.6.0/assets/wix/Product.wxs). Reuse subject to Microsoft's MIT license and WiX's applicable license terms.
+Uses independent, architecture-specific custom MSI `UpgradeCode` identities.
+It checks for an existing PowerShell MSI/ZIP registry-discovery entry and refuses
+to overwrite a Microsoft MSI or a registered ZIP installation. It can major-upgrade
+previous custom MSI builds that use the same custom identity (including the original
+v1 x64 builder).
+
+### Opt-in: `upgrade-official` — migration build
+
+Keeps the same independent custom MSI `UpgradeCode`, but adds a second WiX
+`Upgrade` entry for Microsoft's original **same-architecture** MSI `UpgradeCode`.
+The old MSI should be removed through the normal Windows Installer major-upgrade
+sequence **before** the new files are installed. This is a true MSI migration,
+not simply overwriting `C:\Program Files\PowerShell\7`.
+
+The migration is limited to **older** MSI versions. It must not overwrite an equal
+or newer official MSI, and a ZIP deployment without a related MSI still fails the
+registration check. If an existing official installation was deployed into a custom
+folder, test that behavior separately: the new installer uses the standard folder
+unless its own saved install-folder setting says otherwise.
+
+This **migration mode is an untested code path**. Test it in a VM with the official
+7.6 MSI, verifying that the old product is removed from Installed Apps, the new
+custom product appears, the PowerShell discovery registry key points to the new
+installation, and uninstall leaves no stale files/registry entries.
+
+## Microsoft Update options (legacy)
+
+- `disabled` (default): removes the old MU/WSUS installer dialog, the `EnableMU`
+  custom action, and the package's `MURegistryEntries` component. **It does not
+  disable Windows Update, change existing WSUS policy, or unregister a Microsoft
+  Update service already configured on the PC.**
+- `legacy-unchecked`: copies Microsoft's 7.6 `RegisterMicrosoftUpdate.ps1` from
+  `assets/MicrosoftUpdate/` and retains the original installer UI; both `USE_MU`
+  and `ENABLE_MU` start **unchecked**. Users may select them at installation time.
+- `legacy-checked`: same original 7.6 UI and registration action, with both
+  checkboxes initially **checked**. The installer may register the system with
+  Microsoft Update (a machine-wide effect). This is opt-in and not recommended
+  for an unofficial 7.7 MSI.
+
+**Neither legacy option guarantees Microsoft Update / WSUS / ConfigMgr servicing.**
+Microsoft is no longer publishing an official MSI for 7.7. A checked box can register
+an update preference or Microsoft Update service without Microsoft publishing any
+applicable update for this MSI. Moreover, existing machine-wide policy and registry
+settings may remain from the previous official MSI. For the safest default,
+use `disabled`, and distribute subsequent community-built MSI upgrades yourself.
+
+The legacy MU registration script is Microsoft's original MIT-licensed script,
+not a new implementation. It is copied into the MSI payload only when selected.
+The UI options are *installer settings*, not an external Windows Update blocker.
+
+## Verify installation and migration in a Windows VM
+
+1. Clean install on x64, x86, and ARM64 systems of the appropriate architecture.
+2. Official 7.6 MSI -> `upgrade-official` custom 7.7 MSI of the **same** architecture.
+3. Official 7.6 MSI -> `block-official` MSI: should **fail without changing the old install**.
+4. Existing custom MSI -> newer custom MSI: should major-upgrade successfully.
+5. Existing registered ZIP installation -> either MSI mode: should **fail** (unless a real related official MSI is also detected).
+6. Silent installation (`msiexec /i package.msi /qn`), UI installation, repair, and uninstall.
+7. Installed Apps entry, PATH, context menus, Start Menu shortcut, `pwsh.exe`, and PowerShellCore `InstalledVersions` registry metadata.
+8. With `legacy-checked`, check both `UseMU` persistence and system Windows Update service enrollment, *but do not assume future updates will arrive*.
+9. Verify the old MSI is removed exactly once. Use `msiexec /i package.msi /L*V install.log` if migration fails.
+
+**Do not use the migration variant on a production installation until it has passed
+these tests.** This builder is generated and source-checked, but has not been executed
+on a Windows GitHub Actions runner or installation-tested in this session.
+
+## Files and upstream source
+
+- [PowerShell 7.6.0 Product.wxs](https://github.com/PowerShell/PowerShell/blob/v7.6.0/assets/wix/Product.wxs)
+- [PowerShell 7.6.0 Microsoft Update script](https://github.com/PowerShell/PowerShell/blob/v7.6.0/assets/MicrosoftUpdate/RegisterMicrosoftUpdate.ps1)
+- [PowerShell 7.7 release artifacts and SHA-256 hashes](https://github.com/PowerShell/PowerShell/releases/tag/v7.7.0)
+
+The workflow checks out the 7.6.0 installer files as a separate checkout in the job;
+there is no need to revert PowerShell's upstream MSI-removal PR or fork WiX. The
+MSI files are unsigned. Microsoft-signed EXE/DLL files in the official ZIP remain unchanged.

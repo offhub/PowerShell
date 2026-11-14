@@ -4,33 +4,73 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Stable PowerShell version (e.g. 7.7.0)'
+        description: 'Stable PowerShell version, e.g. 7.7.0'
+        type: string
         required: true
         default: '7.7.0'
+      architecture:
+        description: 'Architecture to build'
+        type: choice
+        required: true
+        default: x64
+        options:
+          - x64
+          - x86
+          - arm64
+          - all
+      install_policy:
+        description: 'Existing official MSI installation'
+        type: choice
+        required: true
+        default: block-official
+        options:
+          - block-official
+          - upgrade-official
+      microsoft_update:
+        description: 'Legacy Microsoft Update/WSUS page (NOT guaranteed servicing)'
+        type: choice
+        required: true
+        default: disabled
+        options:
+          - disabled
+          - legacy-unchecked
+          - legacy-checked
+      sha256_x64:
+        description: 'Official win-x64.zip SHA-256 (7.7.0 default)'
         type: string
-      sha256:
-        description: 'SHA-256 of the official win-x64.zip from GitHub Releases'
         required: true
         default: '7C74E03B20A75B59715847439D046A6214B1863EE79B187872980F139BB4A05F'
+      sha256_x86:
+        description: 'Official win-x86.zip SHA-256 (7.7.0 default)'
         type: string
+        required: true
+        default: '1723B1EF5FF7791A77638F05B48168331DF84F51C19FBEC7A1321FE924F3463B'
+      sha256_arm64:
+        description: 'Official win-arm64.zip SHA-256 (7.7.0 default)'
+        type: string
+        required: true
+        default: '5DC7440CD98F0BA786A44D7DB9205DF5058474FD4DB143CAF7171E8375F34F75'
 
 permissions:
   contents: read
 
 jobs:
   build:
-    name: Build x64 MSI with legacy WiX authoring
+    name: ${{ inputs.architecture == 'all' && 'all architectures' || inputs.architecture }} / ${{ matrix.arch }} / ${{ inputs.install_policy }} / ${{ inputs.microsoft_update }}
     runs-on: windows-2022
-    timeout-minutes: 30
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: ${{ fromJSON(inputs.architecture == 'all' && '["x64","x86","arm64"]' || format('["{0}"]', inputs.architecture)) }}
 
     steps:
-      - name: Check out your fork
+      - name: Check out fork
         uses: actions/checkout@v4
         with:
           persist-credentials: false
 
-      # This is a separate checkout. It does not replace your fork's current files.
-      - name: Check out PowerShell 7.6 installer sources
+      - name: Check out original 7.6 installer sources
         uses: actions/checkout@v4
         with:
           repository: PowerShell/PowerShell
@@ -38,24 +78,31 @@ jobs:
           path: legacy-powershell
           persist-credentials: false
 
-      - name: Build MSI from the official ZIP
+      - name: Build MSI from official GitHub Releases ZIP
         shell: pwsh
         env:
           PS_VERSION: ${{ inputs.version }}
-          PS_ZIP_SHA256: ${{ inputs.sha256 }}
+          PS_ARCH: ${{ matrix.arch }}
+          PS_ZIP_SHA256: ${{ matrix.arch == 'x64' && inputs.sha256_x64 || matrix.arch == 'x86' && inputs.sha256_x86 || inputs.sha256_arm64 }}
+          PS_INSTALL_POLICY: ${{ inputs.install_policy }}
+          PS_MICROSOFT_UPDATE: ${{ inputs.microsoft_update }}
         run: |
           $ErrorActionPreference = 'Stop'
           & "$env:GITHUB_WORKSPACE/tools/custom-msi/build-msi.ps1" `
             -Version $env:PS_VERSION `
+            -Architecture $env:PS_ARCH `
             -ExpectedSha256 $env:PS_ZIP_SHA256 `
+            -InstallPolicy $env:PS_INSTALL_POLICY `
+            -MicrosoftUpdate $env:PS_MICROSOFT_UPDATE `
             -LegacyRoot "$env:GITHUB_WORKSPACE/legacy-powershell" `
             -OutputDirectory "$env:GITHUB_WORKSPACE/out"
 
       - name: Upload MSI artifact
         uses: actions/upload-artifact@v4
         with:
-          name: PowerShell-${{ inputs.version }}-win-x64-unofficial-msi
+          name: PowerShell-${{ inputs.version }}-${{ matrix.arch }}-${{ inputs.install_policy }}-${{ inputs.microsoft_update }}-msi
           path: |
             out/*.msi
             out/*.sha256
           if-no-files-found: error
+          retention-days: 30

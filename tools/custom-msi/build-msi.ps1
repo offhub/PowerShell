@@ -1,4 +1,4 @@
-# Build an unofficial x64 MSI using PowerShell v7.6.0's Product.wxs
+# Build an unofficial Windows MSI using PowerShell v7.6.0's Product.wxs
 # and the official PowerShell stable release ZIP. No compilation or signing.
 # Copyright: original WiX authoring is (c) Microsoft, MIT License.
 # This script is independently authored.
@@ -16,17 +16,48 @@ param(
     [string] $LegacyRoot,
 
     [Parameter(Mandatory)]
-    [string] $OutputDirectory
+    [string] $OutputDirectory,
+
+    [ValidateSet('x64', 'x86', 'arm64')]
+    [string] $Architecture = 'x64',
+
+    [ValidateSet('block-official', 'upgrade-official')]
+    [string] $InstallPolicy = 'block-official',
+
+    [ValidateSet('disabled', 'legacy-unchecked', 'legacy-checked')]
+    [string] $MicrosoftUpdate = 'disabled'
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-# A fixed custom MSI UpgradeCode, different from Microsoft's original x64 MSI.
-# Keep this unchanged for subsequent custom MSI releases.
-$customUpgradeCode = 'b7bfda8e-3029-4931-982d-6a4218e1b5c6'
-$originalDiscoveryId = '31ab5147-9a97-4452-8443-d9709f0516e1'
+# Independent, stable MSI upgrade identities: keep unchanged across custom releases.
+# Different from the official MSI identities, which are used ONLY for optional migration.
+$architectures = @{
+    x64 = @{
+        CustomUpgradeCode = 'b7bfda8e-3029-4931-982d-6a4218e1b5c6'
+        OfficialUpgradeCode = '31ab5147-9a97-4452-8443-d9709f0516e1'
+        FileArchitecture = 'amd64'
+        ProgramFilesDirectory = 'ProgramFiles64Folder'
+    }
+    x86 = @{
+        CustomUpgradeCode = 'c4aa87a8-d562-48e4-aa9b-197c7932375e'
+        OfficialUpgradeCode = '1d00683b-0f84-4db8-a64f-2f98ad42fe06'
+        FileArchitecture = 'x86'
+        ProgramFilesDirectory = 'ProgramFilesFolder'
+    }
+    arm64 = @{
+        CustomUpgradeCode = 'e5ccda2e-1568-4ec8-b6a4-3814d86e2f5d'
+        OfficialUpgradeCode = '75c68ab2-09d8-46b8-b697-d829bdd4c94f'
+        FileArchitecture = 'arm64'
+        ProgramFilesDirectory = 'ProgramFiles64Folder'
+    }
+}
+$config = $architectures[$Architecture]
+$customUpgradeCode = $config.CustomUpgradeCode
+$originalDiscoveryId = $config.OfficialUpgradeCode
 $discoveryKey = "Software\Microsoft\PowerShellCore\InstalledVersions\$originalDiscoveryId"
+Write-Host "Target: PowerShell $Version $Architecture; install policy: $InstallPolicy; MU: $MicrosoftUpdate"
 
 $LegacyRoot = (Resolve-Path -LiteralPath $LegacyRoot).Path
 $originalWxs = Join-Path $LegacyRoot 'assets/wix/Product.wxs'
@@ -34,7 +65,7 @@ if (-not (Test-Path -LiteralPath $originalWxs)) {
     throw "PowerShell 7.6 Product.wxs not found: $originalWxs"
 }
 
-$work = Join-Path ([IO.Path]::GetTempPath()) 'powershell-custom-msi'
+$work = Join-Path ([IO.Path]::GetTempPath()) "powershell-custom-msi-$Architecture"
 if (Test-Path -LiteralPath $work) {
     Remove-Item -LiteralPath $work -Recurse -Force
 }
@@ -42,7 +73,7 @@ New-Item -ItemType Directory -Path $work -Force | Out-Null
 New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
 $OutputDirectory = (Resolve-Path -LiteralPath $OutputDirectory).Path
 
-$zipName = "PowerShell-$Version-win-x64.zip"
+$zipName = "PowerShell-$Version-win-$Architecture.zip"
 $zipPath = Join-Path $work $zipName
 $zipUrl = "https://github.com/PowerShell/PowerShell/releases/download/v$Version/$zipName"
 Write-Host "Downloading $zipUrl"
@@ -88,10 +119,16 @@ foreach ($item in @($heat, $candle, $light)) {
 # Keep original WiX UI, shortcut, context menu and PATH authoring.
 $wxs = Join-Path $work 'Product.wxs'
 $source = Get-Content -LiteralPath $originalWxs -Raw
-$oldDefinition = '<?define UpgradeCodeRelease = "31ab5147-9a97-4452-8443-d9709f0516e1"?>'
-$newDefinition = "<?define UpgradeCodeRelease = `"$customUpgradeCode`"?>"
-if (-not $source.Contains($oldDefinition)) { throw 'Original UpgradeCode definition changed.' }
-$source = $source.Replace($oldDefinition, $newDefinition)
+# Patch all 3 architecture branches, preserving their distinct UpgradeCodes.
+# The official codes continue to be used for registry discovery and optional migration.
+foreach ($entry in $architectures.GetEnumerator()) {
+    $oldDefinition = '<?define UpgradeCodeRelease = "' + $entry.Value.OfficialUpgradeCode + '"?>'
+    $newDefinition = '<?define UpgradeCodeRelease = "' + $entry.Value.CustomUpgradeCode + '"?>'
+    if (-not $source.Contains($oldDefinition)) {
+        throw "Original $($entry.Key) UpgradeCode definition changed."
+    }
+    $source = $source.Replace($oldDefinition, $newDefinition)
+}
 $source = $source.Replace('Manufacturer="Microsoft Corporation"', 'Manufacturer="Community PowerShell MSI Packager"')
 $source = $source.Replace('Name="PowerShell $(var.SimpleProductVersion)-$(sys.BUILDARCH)"',
                           'Name="PowerShell $(var.SimpleProductVersion)-$(sys.BUILDARCH) (Unofficial MSI)"')
@@ -114,28 +151,53 @@ function New-WixElement([string] $Name) {
     return $doc.CreateElement($Name, 'http://schemas.microsoft.com/wix/2006/wi')
 }
 
-# The 7.7 ZIP no longer ships RegisterMicrosoftUpdate.ps1.
-# Remove both the obsolete servicing custom action and its configuration UI.
-Remove-WixNode '//w:Property[@Id="PREVIOUS_USE_MU" or @Id="PREVIOUS_ENABLE_MU"]'
-Remove-WixNode '//w:SetProperty[@Id="USE_MU" or @Id="ENABLE_MU" or @Id="EnableMU"]'
-Remove-WixNode '//w:CustomAction[@Id="EnableMU"]'
-Remove-WixNode '//w:Custom[@Action="EnableMU"]'
-Remove-WixNode '//w:ComponentRef[@Id="MURegistryEntries"]'
-Remove-WixNode '//w:Component[@Id="MURegistryEntries"]'
-Remove-WixNode '//w:RegistryValue[@Name="UseMU" or @Name="EnableMU"]'
+# Legacy option is explicitly opt-in: restoring the original checkboxes does not
+# make Microsoft publish servicing updates for a repackaged PowerShell 7.7 MSI.
+if ($MicrosoftUpdate -eq 'disabled') {
+    # 7.7 no longer ships RegisterMicrosoftUpdate.ps1. Remove the obsolete action/UI.
+    Remove-WixNode '//w:Property[@Id="PREVIOUS_USE_MU" or @Id="PREVIOUS_ENABLE_MU"]'
+    Remove-WixNode '//w:SetProperty[@Id="USE_MU" or @Id="ENABLE_MU" or @Id="EnableMU"]'
+    Remove-WixNode '//w:CustomAction[@Id="EnableMU"]'
+    Remove-WixNode '//w:Custom[@Action="EnableMU"]'
+    Remove-WixNode '//w:ComponentRef[@Id="MURegistryEntries"]'
+    Remove-WixNode '//w:Component[@Id="MURegistryEntries"]'
+    Remove-WixNode '//w:RegistryValue[@Name="UseMU" or @Name="EnableMU"]'
 
-$muDialog = $doc.SelectSingleNode('//w:Dialog[@Id="MuDialog"]', $ns)
-if (-not $muDialog) { throw 'Expected original Microsoft Update dialog is missing.' }
-$muFragment = $muDialog.ParentNode.ParentNode
-if ($muFragment.LocalName -ne 'Fragment') { throw 'Unexpected Microsoft Update dialog layout.' }
-[void] $muFragment.ParentNode.RemoveChild($muFragment)
+    $muDialog = $doc.SelectSingleNode('//w:Dialog[@Id="MuDialog"]', $ns)
+    if (-not $muDialog) { throw 'Expected original Microsoft Update dialog is missing.' }
+    $muFragment = $muDialog.ParentNode.ParentNode
+    if ($muFragment.LocalName -ne 'Fragment') { throw 'Unexpected Microsoft Update dialog layout.' }
+    [void] $muFragment.ParentNode.RemoveChild($muFragment)
 
-$next = $doc.SelectSingleNode('//w:Publish[@Dialog="ExplorerContextMenuDialog" and @Control="Next" and @Value="MuDialog"]', $ns)
-$back = $doc.SelectSingleNode('//w:Publish[@Dialog="VerifyReadyDlg" and @Control="Back" and @Value="MuDialog"]', $ns)
-if (-not $next -or -not $back) { throw 'Original installer UI navigation changed.' }
-$next.SetAttribute('Value', 'VerifyReadyDlg')
-$back.SetAttribute('Value', 'ExplorerContextMenuDialog')
-Remove-WixNode '//w:Publish[@Dialog="MuDialog"]'
+    $next = $doc.SelectSingleNode('//w:Publish[@Dialog="ExplorerContextMenuDialog" and @Control="Next" and @Value="MuDialog"]', $ns)
+    $back = $doc.SelectSingleNode('//w:Publish[@Dialog="VerifyReadyDlg" and @Control="Back" and @Value="MuDialog"]', $ns)
+    if (-not $next -or -not $back) { throw 'Original installer UI navigation changed.' }
+    $next.SetAttribute('Value', 'VerifyReadyDlg')
+    $back.SetAttribute('Value', 'ExplorerContextMenuDialog')
+    Remove-WixNode '//w:Publish[@Dialog="MuDialog"]'
+
+    # Remove legacy saved-state values so an old opt-in is not presented as ours.
+    Remove-WixNode '//w:Component[@Id="SaveInstallerProperties"]/w:RegistryValue[@Name="UseMU" or @Name="EnableMU"]'
+}
+else {
+    $legacyMuScript = Join-Path $LegacyRoot 'assets/MicrosoftUpdate/RegisterMicrosoftUpdate.ps1'
+    if (-not (Test-Path -LiteralPath $legacyMuScript)) {
+        throw "Legacy MU registration script missing: $legacyMuScript"
+    }
+    if (Test-Path -LiteralPath (Join-Path $payload 'RegisterMicrosoftUpdate.ps1')) {
+        throw '7.7 ZIP unexpectedly contains RegisterMicrosoftUpdate.ps1; re-review before overwriting.'
+    }
+    Copy-Item -LiteralPath $legacyMuScript -Destination (Join-Path $payload 'RegisterMicrosoftUpdate.ps1')
+
+    # These are the two original 7.6 checkbox defaults (1 = initially selected).
+    $defaultValue = if ($MicrosoftUpdate -eq 'legacy-checked') { '1' } else { '0' }
+    foreach ($action in @('UseMU_SetDefault', 'EnableMU_SetDefault')) {
+        $node = $doc.SelectSingleNode('//w:SetProperty[@Action="' + $action + '"]', $ns)
+        if (-not $node) { throw "Expected $action default-setting action was not found." }
+        $node.SetAttribute('Value', $defaultValue)
+    }
+    Write-Warning 'Legacy MU checkboxes are enabled. Registration does not guarantee updates for unofficial PowerShell 7.7 MSI releases.'
+}
 
 # Optionally remove the event-manifest custom action if the 7.7 ZIP omits it.
 if (-not (Test-Path -LiteralPath (Join-Path $payload 'RegisterManifest.ps1'))) {
@@ -157,8 +219,10 @@ $marker.SetAttribute('Name', 'UnofficialMSI')
 $marker.SetAttribute('Value', '1')
 [void] $registry.AppendChild($marker)
 
-# Avoid overwriting an official MSI or existing ZIP registration. Allows upgrades
-# of prior builds made by this script, identifiable by UnofficialMSI=1.
+# Do not overwrite an unrelated ZIP deployment. Normal MSI major upgrades of
+# our previous packages are allowed through the custom UpgradeCode.
+# The explicit opt-in mode additionally detects/removes a lower-version official
+# MSI through the official UpgradeCode (but retains the independent custom code).
 $product = $doc.SelectSingleNode('//w:Product', $ns)
 foreach ($entry in @(
     @{ Id = 'EXISTING_PS_INSTALL'; Name = 'InstallLocation'; SearchId = 'FindExistingPSInstall' },
@@ -175,9 +239,32 @@ foreach ($entry in @(
     [void] $property.AppendChild($search)
     [void] $product.AppendChild($property)
 }
+if ($InstallPolicy -eq 'upgrade-official') {
+    # WiX MajorUpgrade already schedules RemoveExistingProducts early. An additional
+    # Upgrade row opts the old Microsoft MSI into that same removal operation.
+    # Maximum excludes equal/newer installed versions; this is not a downgrade path.
+    $major = $doc.SelectSingleNode('//w:MajorUpgrade', $ns)
+    if (-not $major) { throw 'Expected WiX MajorUpgrade was not found.' }
+    $major.SetAttribute('Schedule', 'afterInstallValidate')
+    $upgrade = New-WixElement 'Upgrade'
+    $upgrade.SetAttribute('Id', $originalDiscoveryId)
+    $upgradeVersion = New-WixElement 'UpgradeVersion'
+    $upgradeVersion.SetAttribute('Minimum', '0.0.0')
+    $upgradeVersion.SetAttribute('IncludeMinimum', 'yes')
+    $upgradeVersion.SetAttribute('Maximum', $Version)
+    $upgradeVersion.SetAttribute('IncludeMaximum', 'no')
+    $upgradeVersion.SetAttribute('Property', 'OFFICIAL_PS_UPGRADE')
+    $upgradeVersion.SetAttribute('MigrateFeatures', 'yes')
+    [void] $upgrade.AppendChild($upgradeVersion)
+    [void] $product.AppendChild($upgrade)
+}
 $condition = New-WixElement 'Condition'
-$condition.SetAttribute('Message', 'Remove the existing official PowerShell MSI or ZIP registration before installing this independently packaged MSI.')
-$condition.InnerText = 'Installed OR NOT EXISTING_PS_INSTALL OR EXISTING_CUSTOM_MSI'
+$condition.SetAttribute('Message', 'PowerShell already uses this installation registration. Use an upgrade-official build to migrate a lower-version official MSI; ZIP deployments and newer official MSIs are blocked.')
+$condition.InnerText = if ($InstallPolicy -eq 'upgrade-official') {
+    'Installed OR NOT EXISTING_PS_INSTALL OR EXISTING_CUSTOM_MSI OR OFFICIAL_PS_UPGRADE'
+} else {
+    'Installed OR NOT EXISTING_PS_INSTALL OR EXISTING_CUSTOM_MSI'
+}
 [void] $product.AppendChild($condition)
 
 # Save with UTF-8 without BOM; WiX can consume an ordinary .wxs file.
@@ -187,7 +274,7 @@ $condition.InnerText = 'Installed OR NOT EXISTING_PS_INSTALL OR EXISTING_CUSTOM_
 $fragment = Join-Path $work 'Fragment.wxs'
 $objects = Join-Path $work 'obj'
 New-Item -ItemType Directory -Path $objects -Force | Out-Null
-$msiName = "PowerShell-$Version-win-x64-unofficial.msi"
+$msiName = "PowerShell-$Version-win-$Architecture-$InstallPolicy-$MicrosoftUpdate-unofficial.msi"
 $msi = Join-Path $OutputDirectory $msiName
 
 function Invoke-Tool([string] $Executable, [string[]] $Arguments) {
@@ -205,8 +292,8 @@ $defines = @(
     '-dSimpleProductVersion=7',
     "-dProductSemanticVersion=$Version",
     "-dProductVersionWithName=PowerShell_$Version",
-    '-dProductProgFilesDir=ProgramFiles64Folder',
-    '-dFileArchitecture=amd64',
+    "-dProductProgFilesDir=$($config.ProgramFilesDirectory)",
+    "-dFileArchitecture=$($config.FileArchitecture)",
     '-dIsPreview=False'
 )
 $extensions = @('-ext', 'WixUIExtension', '-ext', 'WixUtilExtension', '-ext', 'WixBalExtension')
@@ -218,7 +305,7 @@ try {
         '-ag', '-sfrag', '-srd', '-scom', '-sreg',
         '-out', $fragment, '-var', 'var.ProductSourcePath'
     )
-    Invoke-Tool $candle (@($wxs, $fragment, '-arch', 'x64', '-out', "$objects\") + $extensions + $defines)
+    Invoke-Tool $candle (@($wxs, $fragment, '-arch', $Architecture, '-out', "$objects\") + $extensions + $defines)
     $wixObjects = @(
         (Join-Path $objects 'Product.wixobj'),
         (Join-Path $objects 'Fragment.wixobj')
