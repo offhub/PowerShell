@@ -1,0 +1,61 @@
+name: Build unofficial PowerShell MSI
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Stable PowerShell version (e.g. 7.7.0)'
+        required: true
+        default: '7.7.0'
+        type: string
+      sha256:
+        description: 'SHA-256 of the official win-x64.zip from GitHub Releases'
+        required: true
+        default: '7C74E03B20A75B59715847439D046A6214B1863EE79B187872980F139BB4A05F'
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build x64 MSI with legacy WiX authoring
+    runs-on: windows-2022
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out your fork
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      # This is a separate checkout. It does not replace your fork's current files.
+      - name: Check out PowerShell 7.6 installer sources
+        uses: actions/checkout@v4
+        with:
+          repository: PowerShell/PowerShell
+          ref: v7.6.0
+          path: legacy-powershell
+          persist-credentials: false
+
+      - name: Build MSI from the official ZIP
+        shell: pwsh
+        env:
+          PS_VERSION: ${{ inputs.version }}
+          PS_ZIP_SHA256: ${{ inputs.sha256 }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & "$env:GITHUB_WORKSPACE/tools/custom-msi/build-msi.ps1" `
+            -Version $env:PS_VERSION `
+            -ExpectedSha256 $env:PS_ZIP_SHA256 `
+            -LegacyRoot "$env:GITHUB_WORKSPACE/legacy-powershell" `
+            -OutputDirectory "$env:GITHUB_WORKSPACE/out"
+
+      - name: Upload MSI artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: PowerShell-${{ inputs.version }}-win-x64-unofficial-msi
+          path: |
+            out/*.msi
+            out/*.sha256
+          if-no-files-found: error
